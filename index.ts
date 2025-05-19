@@ -1,5 +1,5 @@
-import { httpServer } from './src/http_server/index.ts';
-import { startWsServer } from './src/websocket/index.js';
+import { httpServer } from './src/http_server/index.js';
+import startWsServer from './src/websocket/index.js';
 
 const HTTP_PORT = 8181;
 const WS_PORT = 3000;
