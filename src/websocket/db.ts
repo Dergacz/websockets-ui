@@ -1,69 +1,63 @@
 import crypto from 'crypto';
+import { EventEmitter } from 'events';
+import { WebSocket } from 'ws';
 import {
   AddShipsData,
   AttackData,
   Field,
   FieldCell,
+  Game,
   NeighborsCell,
+  PlayerInterface,
   RandomAttackData,
   RegRequestData,
+  Room,
   Ships,
-} from './types.ts';
-import { EventEmitter } from 'events';
-import { WebSocket } from 'ws';
-import { PlayerInterface } from './types.js';
-import { Room, Winner } from './types.js';
+  Winner,
+} from './types.js';
 
 export class Db extends EventEmitter {
   private static instance: Db | null = null;
   private users: PlayerInterface[] = [];
   private winners: Winner[] = [];
   private rooms: Room[] = [];
-  private games: any[] = [];
+  private games: Game[] = [];
+
   private constructor() {
     super();
   }
 
-  static getInstance() {
+  static getInstance(): Db {
     if (this.instance === null) {
       this.instance = new Db();
     }
     return this.instance;
   }
 
-  addUser(player: PlayerInterface) {
+  addUser(player: PlayerInterface): void {
     const index = crypto.randomBytes(16).toString('hex');
     player.index = index;
-
     this.users.push(player);
   }
 
-  findUserInDatabase(name: string) {
+  findUserInDatabase(name: string): PlayerInterface | false {
     const userInDatabase = this.users.find((user) => user.name === name);
-    if (userInDatabase) {
-      return userInDatabase;
-    } else {
-      return false;
-    }
+    return userInDatabase || false;
   }
 
-  checkUser(userData: RegRequestData, player: PlayerInterface) {
+  checkUser(userData: RegRequestData, player: PlayerInterface): PlayerInterface | false {
     const userInDatabase = this.findUserInDatabase(userData.name);
     if (userInDatabase) {
-      if (userInDatabase.password === userData.password) {
-        return userInDatabase;
-      } else {
-        return false;
-      }
-    } else {
-      player.name = userData.name;
-      player.password = userData.password;
-      this.addUser(player);
-      return player;
+      return userInDatabase.password === userData.password ? userInDatabase : false;
     }
+
+    player.name = userData.name;
+    player.password = userData.password;
+    this.addUser(player);
+    return player;
   }
 
-  updateWinners(name: string) {
+  updateWinners(name: string): void {
     const winner = this.winners.find((winner) => winner.name === name);
     if (winner) {
       winner.wins++;
@@ -73,17 +67,22 @@ export class Db extends EventEmitter {
     this.emit('update_winners');
   }
 
-  getWinnersData() {
+  getWinnersData(): Winner[] {
     return this.winners;
   }
 
-  createRoom(player: PlayerInterface) {
-    if (this.rooms.some((room) => room.roomUsers.some((roomUser) => roomUser === player))) {
+  createRoom(player: PlayerInterface): void {
+    if (
+      this.rooms.some((room) =>
+        room.roomUsers.some((roomUser: PlayerInterface) => roomUser === player)
+      )
+    ) {
       console.log('User already in room');
       return;
     }
+
     const roomId = crypto.randomBytes(16).toString('hex');
-    const room = {
+    const room: Room = {
       roomId,
       roomUsers: [player],
     };
@@ -91,7 +90,7 @@ export class Db extends EventEmitter {
     this.emit('update_rooms');
   }
 
-  getAvailableRoomsRes() {
+  getAvailableRoomsRes(): { type: string; data: Room[]; id: number } {
     const availableRooms = this.rooms.filter((room) => room.roomUsers.length === 1);
     return {
       type: 'update_room',
@@ -100,31 +99,34 @@ export class Db extends EventEmitter {
     };
   }
 
-  addUserToRoom(player: PlayerInterface, indexRoom: number | string, _ws: WebSocket) {
+  addUserToRoom(player: PlayerInterface, indexRoom: number | string, _ws: WebSocket): void {
     const roomIndex = this.rooms.findIndex((room) => room.roomId === indexRoom);
-    if (roomIndex !== -1) {
-      if (this.rooms[roomIndex].roomUsers.some((roomUser) => roomUser === player)) {
-        console.log('User already in room');
-        return;
-      }
-
-      if (this.rooms[roomIndex].roomUsers.length < 2) {
-        this.rooms[roomIndex].roomUsers.push(player);
-        this.createGame(this.rooms[roomIndex]);
-        this.emit('update_rooms');
-      } else {
-        console.log('Room is full');
-      }
-    } else {
+    if (roomIndex === -1) {
       console.log('Room not found');
+      return;
     }
+
+    if (this.rooms[roomIndex].roomUsers.some((roomUser: PlayerInterface) => roomUser === player)) {
+      console.log('User already in room');
+      return;
+    }
+
+    if (this.rooms[roomIndex].roomUsers.length >= 2) {
+      console.log('Room is full');
+      return;
+    }
+
+    this.rooms[roomIndex].roomUsers.push(player);
+    this.createGame(this.rooms[roomIndex]);
+    this.emit('update_rooms');
   }
 
-  createGame(room: Room) {
+  createGame(room: Room): void {
     const idGame = crypto.randomBytes(16).toString('hex');
     const idPlayer1 = crypto.randomBytes(16).toString('hex');
     const idPlayer2 = crypto.randomBytes(16).toString('hex');
-    const game = {
+
+    const game: Game = {
       idGame,
       player1: { id: idPlayer1, player: room.roomUsers[0] },
       player2: { id: idPlayer2, player: room.roomUsers[1] },
@@ -148,26 +150,23 @@ export class Db extends EventEmitter {
     game.player2.player.sendResponse(response2);
   }
 
-  addShips(data: AddShipsData) {
+  addShips(data: AddShipsData): void {
     const gameIndex = this.games.findIndex((game) => game.idGame === data.gameId);
-    if (gameIndex !== -1) {
-      if (this.games[gameIndex].player1.id === data.indexPlayer) {
-        this.games[gameIndex].player1.ships = data.ships;
-        this.games[gameIndex].player1.numberOfShipsOnWater = data.ships.length;
-        this.games[gameIndex].player1.field = this.drawPlayersField(data.ships);
-      } else {
-        this.games[gameIndex].player2.ships = data.ships;
-        this.games[gameIndex].player2.numberOfShipsOnWater = data.ships.length;
-        this.games[gameIndex].player2.field = this.drawPlayersField(data.ships);
-      }
+    if (gameIndex === -1) return;
 
-      if (this.games[gameIndex].player1.ships && this.games[gameIndex].player2.ships) {
-        this.startGame(this.games[gameIndex]);
-      }
+    const game = this.games[gameIndex];
+    const player = game.player1.id === data.indexPlayer ? 'player1' : 'player2';
+
+    game[player].ships = data.ships;
+    game[player].numberOfShipsOnWater = data.ships.length;
+    game[player].field = this.drawPlayersField(data.ships);
+
+    if (game.player1.ships && game.player2.ships) {
+      this.startGame(game);
     }
   }
 
-  startGame(game: any) {
+  startGame(game: Game): void {
     const response1 = {
       type: 'start_game',
       data: JSON.stringify({
@@ -191,7 +190,7 @@ export class Db extends EventEmitter {
     this.sendTurnInfo(game);
   }
 
-  sendTurnInfo(game: any) {
+  sendTurnInfo(game: Game): void {
     const response = {
       type: 'turn',
       data: JSON.stringify({ currentPlayer: game.playersTurn }),
@@ -201,19 +200,22 @@ export class Db extends EventEmitter {
     game.player2.player.sendResponse(response);
   }
 
-  switchTurn(game: any) {
+  switchTurn(game: Game): void {
     game.playersTurn = game.playersTurn === game.player1.id ? game.player2.id : game.player1.id;
     this.sendTurnInfo(game);
   }
 
-  removePlayer(player: PlayerInterface) {
+  removePlayer(player: PlayerInterface): void {
     this.users = this.users.filter((user) => user !== player);
 
     const roomWithPlayer = this.rooms.find((room) =>
-      room.roomUsers.some((roomUser) => roomUser === player)
+      room.roomUsers.some((roomUser: PlayerInterface) => roomUser === player)
     );
+
     if (roomWithPlayer) {
-      roomWithPlayer.roomUsers = roomWithPlayer.roomUsers.filter((roomUser) => roomUser !== player);
+      roomWithPlayer.roomUsers = roomWithPlayer.roomUsers.filter(
+        (roomUser: PlayerInterface) => roomUser !== player
+      );
       this.emit('update_rooms');
     }
 
@@ -225,12 +227,12 @@ export class Db extends EventEmitter {
   }
 
   handleAttackResponse(
-    game: any,
+    game: Game,
     cell: { x: number; y: number },
     status: string,
     playerId: string
-  ) {
-    const response1 = {
+  ): void {
+    const response = {
       type: 'attack',
       data: JSON.stringify({
         position: {
@@ -242,42 +244,46 @@ export class Db extends EventEmitter {
       }),
       id: 0,
     };
-    const response2 = {
-      type: 'attack',
-      data: JSON.stringify({
-        position: {
-          x: cell.x,
-          y: cell.y,
-        },
-        currentPlayer: playerId,
-        status: status,
-      }),
-      id: 0,
-    };
-    game.player1.player.sendResponse(response1);
-    game.player2.player.sendResponse(response2);
+
+    game.player1.player.sendResponse(response);
+    game.player2.player.sendResponse(response);
   }
 
-  attack(data: AttackData) {
+  attack(data: AttackData): void {
     const game = this.games.find((game) => game.idGame === data.gameId);
-    if (game && game.playersTurn === data.indexPlayer) {
-      const enemyPlayer = game.player1.id === data.indexPlayer ? 'player2' : 'player1';
+    if (!game || game.playersTurn !== data.indexPlayer) {
+      return;
+    }
 
-      const currentPlayerId =
-        game.player1.id === data.indexPlayer ? game.player1.id : game.player2.id;
-      const fieldCell = game[enemyPlayer].field.cells[data.x][data.y];
-      if (fieldCell.hit) {
-        return;
-      }
+    const enemyPlayer = game.player1.id === data.indexPlayer ? 'player2' : 'player1';
+    const currentPlayerId =
+      game.player1.id === data.indexPlayer ? game.player1.id : game.player2.id;
 
-      fieldCell.hit = true;
-      if (fieldCell.ship) {
-        fieldCell.ship.hp--;
-        if (fieldCell.ship.hp === 0) {
-          this.handleAttackResponse(game, { x: data.x, y: data.y }, 'shot', currentPlayerId);
+    if (!game[enemyPlayer].field?.cells[data.x]?.[data.y]) {
+      return;
+    }
+
+    const fieldCell = game[enemyPlayer].field.cells[data.x][data.y];
+    if (fieldCell.hit) {
+      return;
+    }
+
+    fieldCell.hit = true;
+    if (fieldCell.ship) {
+      fieldCell.ship.hp--;
+      if (fieldCell.ship.hp === 0) {
+        this.handleAttackResponse(game, { x: data.x, y: data.y }, 'shot', currentPlayerId);
+        if (game[enemyPlayer].numberOfShipsOnWater !== undefined) {
           game[enemyPlayer].numberOfShipsOnWater--;
+        }
+
+        if (game[enemyPlayer].field?.cells[data.x]?.[data.y]?.ship?.neighborCells) {
           game[enemyPlayer].field.cells[data.x][data.y].ship.neighborCells.forEach(
             (cell: NeighborsCell) => {
+              if (!game[enemyPlayer].field?.cells[cell.x]?.[cell.y]) {
+                return;
+              }
+
               if (
                 !game[enemyPlayer].field.cells[cell.x][cell.y].hit &&
                 !game[enemyPlayer].field.cells[cell.x][cell.y].ship
@@ -292,31 +298,37 @@ export class Db extends EventEmitter {
               }
             }
           );
-        } else {
-          this.handleAttackResponse(game, { x: data.x, y: data.y }, 'killed', currentPlayerId);
         }
       } else {
-        this.handleAttackResponse(game, { x: data.x, y: data.y }, 'miss', currentPlayerId);
-        this.switchTurn(game);
+        this.handleAttackResponse(game, { x: data.x, y: data.y }, 'killed', currentPlayerId);
       }
+    } else {
+      this.handleAttackResponse(game, { x: data.x, y: data.y }, 'miss', currentPlayerId);
+      this.switchTurn(game);
+    }
 
-      if (game[enemyPlayer].numberOfShipsOnWater === 0) {
-        this.finishGame(game.idGame);
-      }
+    if (game[enemyPlayer].numberOfShipsOnWater === 0) {
+      this.finishGame(game.idGame);
     }
   }
 
-  randomAttack(data: RandomAttackData) {
+  randomAttack(data: RandomAttackData): void {
     const game = this.games.find((game) => game.idGame === data.gameId);
+    if (!game) {
+      return;
+    }
+
     const currentPlayer = game.player1.id === data.indexPlayer ? 'player1' : 'player2';
     let position = { x: 0, y: 0 };
     let found = false;
+
     while (!found) {
       position = {
         x: Math.floor(Math.random() * 10),
         y: Math.floor(Math.random() * 10),
       };
-      if (game[currentPlayer].field.cells[position.x][position.y].hit === false) {
+      const fieldCell = game[currentPlayer].field?.cells[position.x]?.[position.y];
+      if (fieldCell && fieldCell.hit === false) {
         found = true;
       }
     }
@@ -329,7 +341,7 @@ export class Db extends EventEmitter {
     });
   }
 
-  drawPlayersField(ships: Ships[]) {
+  drawPlayersField(ships: Ships[]): Field {
     const field: Field = { cells: [] };
 
     class ShipOnField {
@@ -346,6 +358,7 @@ export class Db extends EventEmitter {
       }
       field.cells.push(column);
     }
+
     ships.forEach((ship) => {
       const shipOnField = new ShipOnField(ship.length, []);
       for (let i = 0; i < ship.length; i++) {
@@ -366,7 +379,7 @@ export class Db extends EventEmitter {
     return field;
   }
 
-  getNeighborsCells(xPos: number, yPos: number) {
+  getNeighborsCells(xPos: number, yPos: number): { x: number; y: number }[] {
     const neighborsCells = [];
     for (let i = xPos - 1; i < xPos + 2; i++) {
       for (let j = yPos - 1; j < yPos + 2; j++) {
@@ -378,36 +391,39 @@ export class Db extends EventEmitter {
     return neighborsCells;
   }
 
-  finishGame(gameId: string, exitedPlayer?: PlayerInterface) {
+  finishGame(gameId: string, exitedPlayer?: PlayerInterface): void {
     const gameIndex = this.games.findIndex((game) => game.idGame === gameId);
-    if (gameIndex !== -1) {
-      let winnerId = '';
-      let winnerName = '';
-      if (exitedPlayer) {
-        const winner =
-          this.games[gameIndex].player1.player === exitedPlayer
-            ? this.games[gameIndex].player2
-            : this.games[gameIndex].player1;
-        winnerId = winner.id;
-        winnerName = winner.player.name;
+    if (gameIndex === -1) return;
+
+    let winnerId = '';
+    let winnerName = '';
+
+    if (exitedPlayer) {
+      const winner =
+        this.games[gameIndex].player1.player === exitedPlayer
+          ? this.games[gameIndex].player2
+          : this.games[gameIndex].player1;
+      winnerId = winner.id;
+      winnerName = winner.player.name;
+    } else {
+      if (!this.games[gameIndex].player1.numberOfShipsOnWater) {
+        winnerId = this.games[gameIndex].player2.id;
+        winnerName = this.games[gameIndex].player2.player.name;
       } else {
-        if (!this.games[gameIndex].player1.numberOfShipsOnWater) {
-          winnerId = this.games[gameIndex].player2.id;
-          winnerName = this.games[gameIndex].player2.player.name;
-        } else {
-          winnerId = this.games[gameIndex].player1.id;
-          winnerName = this.games[gameIndex].player1.player.name;
-        }
+        winnerId = this.games[gameIndex].player1.id;
+        winnerName = this.games[gameIndex].player1.player.name;
       }
-      const response = {
-        type: 'finish',
-        data: JSON.stringify({ winPlayer: winnerId }),
-        id: 0,
-      };
-      this.games[gameIndex].player1.player.sendResponse(response);
-      this.games[gameIndex].player2.player.sendResponse(response);
-      this.games = this.games.filter((game) => game.idGame !== gameId);
-      this.updateWinners(winnerName);
     }
+
+    const response = {
+      type: 'finish',
+      data: JSON.stringify({ winPlayer: winnerId }),
+      id: 0,
+    };
+
+    this.games[gameIndex].player1.player.sendResponse(response);
+    this.games[gameIndex].player2.player.sendResponse(response);
+    this.games = this.games.filter((game) => game.idGame !== gameId);
+    this.updateWinners(winnerName);
   }
 }
